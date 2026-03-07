@@ -1,0 +1,121 @@
+#!/bin/bash
+
+# 1. Self-elevate to root if not currently root
+if [ "$EUID" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
+# 2. Professional Help Header
+show_help() {
+    echo ""
+    echo "==========================================================="
+    echo "                 SYSTEM SERVICES MANAGER                   "
+    echo "==========================================================="
+    echo "  Usage: services [FLAG]"
+    echo ""
+    echo "  Flags:"
+    echo "    no flag     Show ALL services"
+    echo "    -a          Show ALL services"
+    echo "    -f          Show FAILED services"
+    echo "    -s          Show STOPPED (inactive) services"
+    echo "==========================================================="
+    exit 0
+}
+
+# Intercept help flags before getopts
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    show_help
+fi
+
+# 3. Parse arguments for flags
+STATE_FLAG="--state=running" # Default
+while getopts "afs" opt; do
+    case ${opt} in
+        a) STATE_FLAG="--all" ;;
+        f) STATE_FLAG="--state=failed" ;;
+        s) STATE_FLAG="--state=inactive" ;;
+        *) show_help ;;
+    esac
+done
+
+# 4. Fetch services into an array silently
+# Using awk to grab just the first column (the service name)
+mapfile -t SERVICES < <(systemctl list-units --type=service $STATE_FLAG --no-pager --no-legend 2>/dev/null | awk '{print $1}')
+
+# Handle edge case where no services are found
+if [ ${#SERVICES[@]} -eq 0 ]; then
+    echo "No services found matching the criteria."
+    exit 0
+fi
+
+# 5. Main Menu Loop
+while true; do
+    clear
+    echo "================================================="
+    echo "               SYSTEM SERVICES                   "
+    echo "================================================="
+    echo "         For help type: services -h"
+    echo "================================================="
+    echo ""
+    
+    # Print numbered list in 2 columns
+    num_services=${#SERVICES[@]}
+    for (( i=0; i<num_services; i+=2 )); do
+        # Left column
+        printf "%3d) %-45.45s " "$((i+1))" "${SERVICES[$i]}"
+        
+        # Right column (if it exists)
+        if [ $((i+1)) -lt $num_services ]; then
+            printf "%3d) %-45.45s" "$((i+2))" "${SERVICES[$i+1]}"
+        fi
+        echo ""
+    done
+    echo "  q) Quit"
+    echo ""
+    
+    # Prompt for service selection (Enter required for multi-digit numbers)
+    read -p "Select a service: " num
+    echo ""
+    
+    # Validate input: must be a number and within array bounds
+    if [[ ! "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "${#SERVICES[@]}" ]; then
+        echo "Exiting..."
+        exit 0
+    fi
+
+    # Map the 1-based user input back to the 0-based array index
+    SELECTED_SERVICE="${SERVICES[$((num-1))]}"
+
+    # Prompt for action (-n 1 makes it execute instantly without Enter)
+    read -n 1 -p "Action for $SELECTED_SERVICE [r=restart, s=start, p=stop, other=quit]: " action
+    echo ""
+    
+    case "$action" in
+        r|R)
+            echo "Restarting $SELECTED_SERVICE..."
+            systemctl restart "$SELECTED_SERVICE"
+            echo -e "\n--- Result ---"
+            systemctl status "$SELECTED_SERVICE" --no-pager | grep -E "^\s*(Loaded|Active):"
+            ;;
+        s|S)
+            echo "Starting $SELECTED_SERVICE..."
+            systemctl start "$SELECTED_SERVICE"
+            echo -e "\n--- Result ---"
+            systemctl status "$SELECTED_SERVICE" --no-pager | grep -E "^\s*(Loaded|Active):"
+            ;;
+        p|P)
+            echo "Stopping $SELECTED_SERVICE..."
+            systemctl stop "$SELECTED_SERVICE"
+            echo -e "\n--- Result ---"
+            systemctl status "$SELECTED_SERVICE" --no-pager | grep -E "^\s*(Loaded|Active):"
+            ;;
+        *)
+            echo "Exiting..."
+            exit 0
+            ;;
+    esac
+    
+    # Pause indefinitely until you press a key, then auto-return
+    echo ""
+    read -n 1 -s -r -p "Press any key to return to the menu..."
+done
